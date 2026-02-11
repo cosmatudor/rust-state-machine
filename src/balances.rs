@@ -30,7 +30,7 @@ impl<T: Config> Pallet<T> {
 		caller: T::AccountId,
 		to: T::AccountId,
 		amount: T::Balance,
-	) -> Result<(), &'static str> {
+	) -> crate::support::DispatchResult {
 		let caller_balance = self.balance(&caller);
 		let to_balance = self.balance(&to);
 
@@ -44,6 +44,29 @@ impl<T: Config> Pallet<T> {
 		Ok(())
 	}
 }
+
+pub enum Call<T: Config> {
+	Transfer(T::AccountId, T::Balance),
+}
+
+impl<T: Config> crate::support::Dispatch for Pallet<T> {
+	type Caller = T::AccountId;
+	type Call = Call<T>;
+
+	fn dispatch(
+		&mut self,
+		caller: Self::Caller,
+		call: Self::Call,
+	) -> crate::support::DispatchResult {
+		match call{
+			Call::Transfer(to, amount) => {
+				self.transfer(caller, to, amount)?;
+			}
+		}
+		Ok(())
+	}
+}
+
 
 #[cfg(test)]
 mod test {
