@@ -1,6 +1,7 @@
 use crate::support::Dispatch;
 
 mod balances;
+mod proof_of_existence;
 mod support;
 mod system;
 
@@ -12,16 +13,19 @@ pub mod types {
 	pub type Extrinsic = crate::support::Extrinsic<AccountId, crate::RuntimeCall>;
 	pub type Header = crate::support::Header<BlockNumber>;
 	pub type Block = crate::support::Block<Header, Extrinsic>;
+	pub type Content = String;
 }
 
 pub enum RuntimeCall {
 	Balances(balances::Call<Runtime>),
+	PoE(proof_of_existence::Call<Runtime>),
 }
 
 #[derive(Debug)]
 pub struct Runtime {
 	system: system::Pallet<Self>,
 	balances: balances::Pallet<Self>,
+	proof_of_existence: proof_of_existence::Pallet<Self>,
 }
 
 impl system::Config for Runtime {
@@ -34,9 +38,17 @@ impl balances::Config for Runtime {
 	type Balance = types::Balance;
 }
 
+impl proof_of_existence::Config for Runtime {
+	type Content = types::Content;
+}
+
 impl Runtime {
 	fn new() -> Self {
-		Self { system: system::Pallet::new(), balances: balances::Pallet::new() }
+		Self {
+			system: system::Pallet::new(),
+			balances: balances::Pallet::new(),
+			proof_of_existence: proof_of_existence::Pallet::new(),
+		}
 	}
 
 	// Execute a block of extrinsics. Increments the block number.
@@ -74,6 +86,9 @@ impl crate::support::Dispatch for Runtime {
 			RuntimeCall::Balances(call) => {
 				self.balances.dispatch(caller, call)?;
 			},
+			RuntimeCall::PoE(call) => {
+				self.proof_of_existence.dispatch(caller, call)?;
+			},
 		}
 		Ok(())
 	}
@@ -88,21 +103,21 @@ fn main() {
 		extrinsics: vec![
 			support::Extrinsic {
 				caller: "alice".to_string(),
-				call: RuntimeCall::Balances(
-					crate::balances::Call::Transfer("bob".to_string(), 70)
-				),
+				call: RuntimeCall::Balances(crate::balances::Call::Transfer("bob".to_string(), 70)),
 			},
 			support::Extrinsic {
 				caller: "alice".to_string(),
-				call: RuntimeCall::Balances(
-					crate::balances::Call::Transfer("charlie".to_string(), 20)
-				),
+				call: RuntimeCall::Balances(crate::balances::Call::Transfer(
+					"charlie".to_string(),
+					20,
+				)),
 			},
 			support::Extrinsic {
 				caller: "bob".to_string(),
-				call: RuntimeCall::Balances(
-					crate::balances::Call::Transfer("charlie".to_string(), 30)
-				),
+				call: RuntimeCall::Balances(crate::balances::Call::Transfer(
+					"charlie".to_string(),
+					30,
+				)),
 			},
 		],
 	};
@@ -113,13 +128,99 @@ fn main() {
 		header: support::Header { block_number: 2 },
 		extrinsics: vec![support::Extrinsic {
 			caller: "charlie".to_string(),
-			call: RuntimeCall::Balances(
-					crate::balances::Call::Transfer("alice".to_string(), 40)
-				),
+			call: RuntimeCall::Balances(crate::balances::Call::Transfer("alice".to_string(), 40)),
 		}],
 	};
 
 	let _res2 = runtime.execute_block(block_2).map_err(|e| eprintln!("{e}"));
+
+	let block_3 = types::Block {
+		header: support::Header { block_number: 3 },
+		extrinsics: vec![
+			support::Extrinsic {
+				caller: "alice".to_string(),
+				call: RuntimeCall::PoE(proof_of_existence::Call::CreateClaim(
+					"My first document".to_string(),
+				)),
+			},
+			support::Extrinsic {
+				caller: "bob".to_string(),
+				call: RuntimeCall::Balances(balances::Call::Transfer("alice".to_string(), 5)),
+			},
+			support::Extrinsic {
+				caller: "bob".to_string(),
+				call: RuntimeCall::PoE(proof_of_existence::Call::CreateClaim(
+					"Patent for my invention".to_string(),
+				)),
+			},
+			support::Extrinsic {
+				caller: "charlie".to_string(),
+				call: RuntimeCall::PoE(proof_of_existence::Call::CreateClaim(
+					"Copyright on my work".to_string(),
+				)),
+			},
+		],
+	};
+
+	let _res3 = runtime.execute_block(block_3).map_err(|e| eprintln!("{e}"));
+
+	let block_4 = types::Block {
+		header: support::Header { block_number: 4 },
+		extrinsics: vec![
+			support::Extrinsic {
+				caller: "charlie".to_string(),
+				call: RuntimeCall::Balances(balances::Call::Transfer("bob".to_string(), 10)),
+			},
+			support::Extrinsic {
+				caller: "bob".to_string(),
+				call: RuntimeCall::PoE(proof_of_existence::Call::CreateClaim(
+					"My first document".to_string(),
+				)),
+			},
+			support::Extrinsic {
+				caller: "alice".to_string(),
+				call: RuntimeCall::PoE(proof_of_existence::Call::RevokeClaim(
+					"My first document".to_string(),
+				)),
+			},
+		],
+	};
+
+	let _res4 = runtime.execute_block(block_4).map_err(|e| eprintln!("{e}"));
+
+	let block_5 = types::Block {
+		header: support::Header { block_number: 5 },
+		extrinsics: vec![
+			support::Extrinsic {
+				caller: "alice".to_string(),
+				call: RuntimeCall::Balances(balances::Call::Transfer("charlie".to_string(), 3)),
+			},
+			support::Extrinsic {
+				caller: "alice".to_string(),
+				call: RuntimeCall::PoE(proof_of_existence::Call::RevokeClaim(
+					"Non-existent claim".to_string(),
+				)),
+			},
+			support::Extrinsic {
+				caller: "charlie".to_string(),
+				call: RuntimeCall::PoE(proof_of_existence::Call::RevokeClaim(
+					"Patent for my invention".to_string(),
+				)),
+			},
+			support::Extrinsic {
+				caller: "bob".to_string(),
+				call: RuntimeCall::PoE(proof_of_existence::Call::RevokeClaim(
+					"Patent for my invention".to_string(),
+				)),
+			},
+			support::Extrinsic {
+				caller: "bob".to_string(),
+				call: RuntimeCall::Balances(balances::Call::Transfer("alice".to_string(), 15)),
+			},
+		],
+	};
+
+	let _res5 = runtime.execute_block(block_5).map_err(|e| eprintln!("{e}"));
 
 	println!("{runtime:#?}");
 }
