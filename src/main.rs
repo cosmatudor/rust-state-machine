@@ -16,11 +16,7 @@ pub mod types {
 	pub type Content = String;
 }
 
-pub enum RuntimeCall {
-	Balances(balances::Call<Runtime>),
-	PoE(proof_of_existence::Call<Runtime>),
-}
-
+#[macros::runtime]
 #[derive(Debug)]
 pub struct Runtime {
 	system: system::Pallet<Self>,
@@ -42,58 +38,6 @@ impl proof_of_existence::Config for Runtime {
 	type Content = types::Content;
 }
 
-impl Runtime {
-	fn new() -> Self {
-		Self {
-			system: system::Pallet::new(),
-			balances: balances::Pallet::new(),
-			proof_of_existence: proof_of_existence::Pallet::new(),
-		}
-	}
-
-	// Execute a block of extrinsics. Increments the block number.
-	fn execute_block(&mut self, block: types::Block) -> support::DispatchResult {
-		self.system.inc_block_number();
-		if self.system.block_number() != block.header.block_number {
-			return Err(&"block number does not match what is expected")
-		}
-
-		for (i, support::Extrinsic { caller, call }) in block.extrinsics.into_iter().enumerate() {
-			self.system.inc_nonce(&caller);
-			let _res = self.dispatch(caller.clone(), call).map_err(|e| {
-				eprintln!(
-					"Extrinsic Error\n\tBlock Number: {}\n\tExtrinsic Number: {}\n\tError: {}",
-					block.header.block_number, i, e
-				)
-			});
-		}
-
-		Ok(())
-	}
-}
-
-impl crate::support::Dispatch for Runtime {
-	type Caller = <Runtime as system::Config>::AccountId;
-	type Call = RuntimeCall;
-
-	// Dispatch a call on behalf of a caller.
-	fn dispatch(
-		&mut self,
-		caller: Self::Caller,
-		runtime_call: Self::Call,
-	) -> support::DispatchResult {
-		match runtime_call {
-			RuntimeCall::Balances(call) => {
-				self.balances.dispatch(caller, call)?;
-			},
-			RuntimeCall::PoE(call) => {
-				self.proof_of_existence.dispatch(caller, call)?;
-			},
-		}
-		Ok(())
-	}
-}
-
 fn main() {
 	let mut runtime = Runtime::new();
 	runtime.balances.set_balance(&"alice".to_string(), 100);
@@ -103,21 +47,21 @@ fn main() {
 		extrinsics: vec![
 			support::Extrinsic {
 				caller: "alice".to_string(),
-				call: RuntimeCall::Balances(crate::balances::Call::Transfer("bob".to_string(), 70)),
+				call: RuntimeCall::balances(crate::balances::Call::transfer{to:"bob".to_string(),amount: 70}),
 			},
 			support::Extrinsic {
 				caller: "alice".to_string(),
-				call: RuntimeCall::Balances(crate::balances::Call::Transfer(
-					"charlie".to_string(),
-					20,
-				)),
+				call: RuntimeCall::balances(crate::balances::Call::transfer{
+					to: "charlie".to_string(),
+					amount: 20,
+			}),
 			},
 			support::Extrinsic {
 				caller: "bob".to_string(),
-				call: RuntimeCall::Balances(crate::balances::Call::Transfer(
-					"charlie".to_string(),
-					30,
-				)),
+				call: RuntimeCall::balances(crate::balances::Call::transfer{
+					to: "charlie".to_string(),
+					amount: 30,
+			}),
 			},
 		],
 	};
@@ -128,7 +72,7 @@ fn main() {
 		header: support::Header { block_number: 2 },
 		extrinsics: vec![support::Extrinsic {
 			caller: "charlie".to_string(),
-			call: RuntimeCall::Balances(crate::balances::Call::Transfer("alice".to_string(), 40)),
+			call: RuntimeCall::balances(crate::balances::Call::transfer{to:"alice".to_string(), amount: 40}),
 		}],
 	};
 
@@ -139,25 +83,28 @@ fn main() {
 		extrinsics: vec![
 			support::Extrinsic {
 				caller: "alice".to_string(),
-				call: RuntimeCall::PoE(proof_of_existence::Call::CreateClaim(
-					"My first document".to_string(),
-				)),
+				call: RuntimeCall::proof_of_existence(proof_of_existence::Call::create_claim {
+					claim: "My first document".to_string(),
+				}),
 			},
 			support::Extrinsic {
 				caller: "bob".to_string(),
-				call: RuntimeCall::Balances(balances::Call::Transfer("alice".to_string(), 5)),
+				call: RuntimeCall::balances(balances::Call::transfer {
+					to: "alice".to_string(),
+					amount: 5,
+				}),
 			},
 			support::Extrinsic {
 				caller: "bob".to_string(),
-				call: RuntimeCall::PoE(proof_of_existence::Call::CreateClaim(
-					"Patent for my invention".to_string(),
-				)),
+				call: RuntimeCall::proof_of_existence(proof_of_existence::Call::create_claim {
+					claim: "Patent for my invention".to_string(),
+				}),
 			},
 			support::Extrinsic {
 				caller: "charlie".to_string(),
-				call: RuntimeCall::PoE(proof_of_existence::Call::CreateClaim(
-					"Copyright on my work".to_string(),
-				)),
+				call: RuntimeCall::proof_of_existence(proof_of_existence::Call::create_claim {
+					claim: "Copyright on my work".to_string(),
+				}),
 			},
 		],
 	};
@@ -169,19 +116,22 @@ fn main() {
 		extrinsics: vec![
 			support::Extrinsic {
 				caller: "charlie".to_string(),
-				call: RuntimeCall::Balances(balances::Call::Transfer("bob".to_string(), 10)),
+				call: RuntimeCall::balances(balances::Call::transfer {
+					to: "bob".to_string(),
+					amount: 10,
+				}),
 			},
 			support::Extrinsic {
 				caller: "bob".to_string(),
-				call: RuntimeCall::PoE(proof_of_existence::Call::CreateClaim(
-					"My first document".to_string(),
-				)),
+				call: RuntimeCall::proof_of_existence(proof_of_existence::Call::create_claim {
+					claim: "My first document".to_string(),
+				}),
 			},
 			support::Extrinsic {
 				caller: "alice".to_string(),
-				call: RuntimeCall::PoE(proof_of_existence::Call::RevokeClaim(
-					"My first document".to_string(),
-				)),
+				call: RuntimeCall::proof_of_existence(proof_of_existence::Call::revoke_claim {
+					claim: "My first document".to_string(),
+				}),
 			},
 		],
 	};
@@ -193,29 +143,35 @@ fn main() {
 		extrinsics: vec![
 			support::Extrinsic {
 				caller: "alice".to_string(),
-				call: RuntimeCall::Balances(balances::Call::Transfer("charlie".to_string(), 3)),
+				call: RuntimeCall::balances(balances::Call::transfer {
+					to: "charlie".to_string(),
+					amount: 3,
+				}),
 			},
 			support::Extrinsic {
 				caller: "alice".to_string(),
-				call: RuntimeCall::PoE(proof_of_existence::Call::RevokeClaim(
-					"Non-existent claim".to_string(),
-				)),
+				call: RuntimeCall::proof_of_existence(proof_of_existence::Call::revoke_claim {
+					claim: "Non-existent claim".to_string(),
+				}),
 			},
 			support::Extrinsic {
 				caller: "charlie".to_string(),
-				call: RuntimeCall::PoE(proof_of_existence::Call::RevokeClaim(
-					"Patent for my invention".to_string(),
-				)),
+				call: RuntimeCall::proof_of_existence(proof_of_existence::Call::revoke_claim {
+					claim: "Patent for my invention".to_string(),
+				}),
 			},
 			support::Extrinsic {
 				caller: "bob".to_string(),
-				call: RuntimeCall::PoE(proof_of_existence::Call::RevokeClaim(
-					"Patent for my invention".to_string(),
-				)),
+				call: RuntimeCall::proof_of_existence(proof_of_existence::Call::revoke_claim {
+					claim: "Patent for my invention".to_string(),
+				}),
 			},
 			support::Extrinsic {
 				caller: "bob".to_string(),
-				call: RuntimeCall::Balances(balances::Call::Transfer("alice".to_string(), 15)),
+				call: RuntimeCall::balances(balances::Call::transfer {
+					to: "alice".to_string(),
+					amount: 15,
+				}),
 			},
 		],
 	};
