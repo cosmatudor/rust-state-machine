@@ -1,9 +1,10 @@
 use crate::support::DispatchResult;
 use core::fmt::Debug;
+use parity_scale_codec::{Decode, Encode};
 use std::collections::BTreeMap;
 
 pub trait Config: crate::system::Config {
-	type Content: Debug + Ord;
+	type Content: Debug + Ord + Encode + Decode;
 }
 
 #[derive(Debug)]

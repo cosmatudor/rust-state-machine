@@ -51,6 +51,7 @@ pub fn expand_runtime(def: RuntimeDef) -> proc_macro2::TokenStream {
 		//
 		// The parsed function names will be `snake_case`, and that will show up in the enum.
 		#[allow(non_camel_case_types)]
+		#[derive(parity_scale_codec::Encode, parity_scale_codec::Decode)]
 		pub enum RuntimeCall {
 			#( #pallet_names(#pallet_names::Call<#runtime_struct>) ),*
 		}

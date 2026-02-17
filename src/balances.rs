@@ -1,10 +1,11 @@
 use num::traits::{CheckedAdd, CheckedSub, Zero};
+use parity_scale_codec::{Decode, Encode};
 use std::collections::BTreeMap;
 
 use crate::system;
 
 pub trait Config: system::Config {
-	type Balance: Zero + CheckedSub + CheckedAdd + Copy;
+	type Balance: Zero + CheckedSub + CheckedAdd + Copy + Encode + Decode;
 }
 
 #[derive(Debug)]

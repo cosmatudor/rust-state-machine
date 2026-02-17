@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
 use num::traits::{CheckedAdd, CheckedSub, One, Zero};
+use parity_scale_codec::{Decode, Encode};
 
 pub trait Config {
-	type AccountId: Ord + Clone;
+	type AccountId: Ord + Clone + Encode + Decode;
 	type Nonce: Zero + CheckedAdd + Copy + One;
 	type BlockNumber: Zero + CheckedSub + CheckedAdd + Copy + One;
 }

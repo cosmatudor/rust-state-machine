@@ -5,4 +5,6 @@ edition = "2024"
 
 [dependencies]
 num = "0.4.3"
+clap = { version = "4", features = ["derive"] }
+parity-scale-codec = { version = "3", features = ["derive"] }
 macros = { path = "./macros/" }

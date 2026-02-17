@@ -30,6 +30,7 @@ pub fn expand_call(def: CallDef) -> proc_macro2::TokenStream {
 		//
 		// The parsed function names will be `snake_case`, and that will show up in the enum.
 		#[allow(non_camel_case_types)]
+		#[derive(parity_scale_codec::Encode, parity_scale_codec::Decode)]
 		pub enum Call<T: Config> {
 			#(
 				#fn_name { #( #args_name: #args_type),* },
