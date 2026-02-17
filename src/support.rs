@@ -1,4 +1,6 @@
+use once_cell::sync::Lazy;
 use parity_scale_codec::{Decode, Encode};
+use rocksdb::{IteratorMode, Options, DB};
 
 #[derive(Clone, Encode, Decode)]
 pub struct Block<Header, Extrinsic> {
@@ -17,6 +19,56 @@ pub struct Extrinsic<Caller, Call> {
 	pub call: Call,
 }
 pub type DispatchResult = Result<(), &'static str>;
+
+/// Key–value store abstraction.
+pub trait KeyValueStore {
+	fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
+	fn put(&self, key: &[u8], value: &[u8]) -> Result<(), String>;
+	fn delete(&self, key: &[u8]) -> Result<(), String>;
+	fn scan_prefix(&self, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)>;
+}
+
+static ROCKS_DB: Lazy<DB> = Lazy::new(|| {
+	let mut opts = Options::default();
+	opts.create_if_missing(true);
+	DB::open(&opts, "state.db").expect("failed to open RocksDB at ./state.db")
+});
+
+pub struct RocksDbStore;
+
+impl KeyValueStore for RocksDbStore {
+	fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+		ROCKS_DB.get(key).ok().flatten().map(|v| v.to_vec())
+	}
+
+	fn put(&self, key: &[u8], value: &[u8]) -> Result<(), String> {
+		ROCKS_DB.put(key, value).map_err(|e| e.to_string())
+	}
+
+	fn delete(&self, key: &[u8]) -> Result<(), String> {
+		ROCKS_DB.delete(key).map_err(|e| e.to_string())
+	}
+
+	fn scan_prefix(&self, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+		let mode = IteratorMode::Start;
+		ROCKS_DB
+			.iterator(mode)
+			.filter_map(|res| res.ok())
+			.filter_map(|(k, v)| {
+				if k.starts_with(prefix) {
+					Some((k.to_vec(), v.to_vec()))
+				} else {
+					None
+				}
+			})
+			.collect()
+	}
+}
+
+/// Helper to access the global key–value store.
+pub fn kv_store() -> RocksDbStore {
+	RocksDbStore
+}
 
 /// Pending extrinsics waiting to be included in a block.
 /// Clear boundary between "received" and "applied" transactions.

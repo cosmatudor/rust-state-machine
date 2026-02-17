@@ -2,7 +2,10 @@ use num::traits::{CheckedAdd, CheckedSub, Zero};
 use parity_scale_codec::{Decode, Encode};
 use std::collections::BTreeMap;
 
+use crate::support::{kv_store, KeyValueStore};
 use crate::system;
+
+const PREFIX_BALANCE: &[u8] = b"balances:";
 
 pub trait Config: system::Config {
 	type Balance: Zero + CheckedSub + CheckedAdd + Copy + Encode + Decode;
@@ -15,11 +18,39 @@ pub struct Pallet<T: Config> {
 
 impl<T: Config> Pallet<T> {
 	pub fn new() -> Self {
-		Self { balances: BTreeMap::new() }
+		let store = kv_store();
+		let mut balances = BTreeMap::new();
+
+		for (key, value) in store.scan_prefix(PREFIX_BALANCE) {
+			if key.len() <= PREFIX_BALANCE.len() {
+				continue;
+			}
+			let account_bytes = &key[PREFIX_BALANCE.len()..];
+			if let (Ok(account), Ok(balance)) = (
+				T::AccountId::decode(&mut &account_bytes[..]),
+				T::Balance::decode(&mut &value[..]),
+			) {
+				balances.insert(account, balance);
+			}
+		}
+
+		Self { balances }
+	}
+
+	fn balance_key(who: &T::AccountId) -> Vec<u8> {
+		let mut key = PREFIX_BALANCE.to_vec();
+		key.extend(who.encode());
+		key
 	}
 
 	pub fn set_balance(&mut self, who: &T::AccountId, amount: T::Balance) {
 		self.balances.insert(who.clone(), amount);
+
+		let key = Self::balance_key(who);
+		let encoded = amount.encode();
+		if let Err(e) = kv_store().put(&key, &encoded) {
+			eprintln!("Failed to persist balance: {e}");
+		}
 	}
 
 	pub fn balance(&self, who: &T::AccountId) -> T::Balance {

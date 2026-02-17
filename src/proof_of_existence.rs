@@ -1,7 +1,9 @@
-use crate::support::DispatchResult;
+use crate::support::{DispatchResult, kv_store, KeyValueStore};
 use core::fmt::Debug;
 use parity_scale_codec::{Decode, Encode};
 use std::collections::BTreeMap;
+
+const PREFIX_POE: &[u8] = b"poe:";
 
 pub trait Config: crate::system::Config {
 	type Content: Debug + Ord + Encode + Decode;
@@ -14,7 +16,29 @@ pub struct Pallet<T: Config> {
 
 impl<T: Config> Pallet<T> {
 	pub fn new() -> Self {
-		Self { claims: BTreeMap::new() }
+		let store = kv_store();
+		let mut claims = BTreeMap::new();
+
+		for (key, value) in store.scan_prefix(PREFIX_POE) {
+			if key.len() <= PREFIX_POE.len() {
+				continue;
+			}
+			let content_bytes = &key[PREFIX_POE.len()..];
+			if let (Ok(content), Ok(owner)) = (
+				T::Content::decode(&mut &content_bytes[..]),
+				T::AccountId::decode(&mut &value[..]),
+			) {
+				claims.insert(content, owner);
+			}
+		}
+
+		Self { claims }
+	}
+
+	fn claim_key(claim: &T::Content) -> Vec<u8> {
+		let mut key = PREFIX_POE.to_vec();
+		key.extend(claim.encode());
+		key
 	}
 
 	#[allow(dead_code)]
@@ -30,6 +54,14 @@ impl<T: Config> Pallet<T> {
 			return Err(&"this content is already claimed");
 		}
 		self.claims.insert(claim, caller);
+
+		let last_claim = self.claims.keys().last().expect("inserted; map not empty");
+		let owner = self.claims.get(last_claim).expect("owner exists");
+		let key = Self::claim_key(last_claim);
+		let encoded_owner = owner.encode();
+		if let Err(e) = kv_store().put(&key, &encoded_owner) {
+			eprintln!("Failed to persist PoE claim: {e}");
+		}
 		Ok(())
 	}
 
@@ -39,6 +71,11 @@ impl<T: Config> Pallet<T> {
 			return Err(&"caller is not owner");
 		}
 		self.claims.remove(&claim);
+
+		let key = Self::claim_key(&claim);
+		if let Err(e) = kv_store().delete(&key) {
+			eprintln!("Failed to delete PoE claim from storage: {e}");
+		}
 		Ok(())
 	}
 }
