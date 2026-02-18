@@ -49,6 +49,10 @@ impl<T: Config> Pallet<T> {
 		self.block_number
 	}
 
+	pub fn nonce(&self, who: &T::AccountId) -> T::Nonce {
+		*self.nonce.get(who).unwrap_or(&T::Nonce::zero())
+	}
+
 	pub fn inc_block_number(&mut self) {
 		self.block_number = self.block_number.checked_add(&T::BlockNumber::one()).unwrap();
 		let encoded = self.block_number.encode();
