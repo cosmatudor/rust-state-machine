@@ -1,13 +1,25 @@
 use core::fmt;
 use once_cell::sync::Lazy;
 use parity_scale_codec::{Decode, Encode};
-use rocksdb::{IteratorMode, Options, DB};
+use rocksdb::{DB, IteratorMode, Options};
+use std::sync::OnceLock;
 
-/// A 32-byte account identifier displayed as abbreviated hex — mirrors `sp_core::crypto::AccountId32`.
-///
-/// `Debug` shows `0xXXXXXXXX…YYYYYYYY` (first 4 + last 4 bytes) so `BTreeMap` keys
-/// are human-readable in debug output without printing 32 raw integers.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Encode, Decode)]
+/// Override the RocksDB path before any storage operation is performed.
+/// Defaults to `"state.db"` in the current working directory.
+/// Panics if called after the database has already been opened.
+pub fn init_db_path(path: &str) {
+	DB_PATH
+		.set(path.to_string())
+		.expect("DB path already initialised — call init_db_path before any storage operation");
+}
+
+pub fn db_path() -> &'static str {
+	DB_PATH.get().map(|s| s.as_str()).unwrap_or("state.db")
+}
+
+static DB_PATH: OnceLock<String> = OnceLock::new();
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Encode, Decode)]
 pub struct AccountId32(pub [u8; 32]);
 
 impl AccountId32 {
@@ -25,7 +37,6 @@ impl From<[u8; 32]> for AccountId32 {
 impl fmt::Debug for AccountId32 {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		let hex: String = self.0.iter().map(|b| format!("{b:02x}")).collect();
-		// Show first 4 and last 4 bytes like Substrate's SS58 truncation.
 		write!(f, "0x{}…{}", &hex[..8], &hex[56..])
 	}
 }
@@ -43,18 +54,16 @@ pub struct Header<BlockNumber> {
 
 #[derive(Encode, Decode)]
 pub struct UncheckedExtrinsic<Call> {
-	/// Ed25519 public key of the sender — this IS the `AccountId` in the runtime.
+	/// Ed25519 public key of the sender
 	pub signer: AccountId32,
 	/// Ed25519 signature over SCALE(`signer.0 ‖ nonce ‖ call`).
 	pub signature: [u8; 64],
-	/// Sender's nonce at submission time. Prevents replay attacks.
 	pub nonce: u32,
 	pub call: Call,
 }
 
 impl<Call: Encode> UncheckedExtrinsic<Call> {
-	/// Build and sign a new extrinsic.
-	pub fn new_signed(sk: &ed25519_dalek::SigningKey, nonce: u32, call: Call) -> Self {
+		pub fn new_signed(sk: &ed25519_dalek::SigningKey, nonce: u32, call: Call) -> Self {
 		use ed25519_dalek::Signer;
 		let signer = AccountId32(*sk.verifying_key().as_bytes());
 		let payload = (signer.as_bytes(), nonce, &call).encode();
@@ -62,7 +71,6 @@ impl<Call: Encode> UncheckedExtrinsic<Call> {
 		Self { signer, signature, nonce, call }
 	}
 
-	/// Verify the signature. Returns `Err` if the public key or signature is invalid.
 	pub fn verify(&self) -> DispatchResult {
 		use ed25519_dalek::Verifier;
 		let vk = ed25519_dalek::VerifyingKey::from_bytes(self.signer.as_bytes())
@@ -73,7 +81,6 @@ impl<Call: Encode> UncheckedExtrinsic<Call> {
 	}
 }
 
-/// `AccountId32` already has a compact hex `Debug`; show the signature truncated too.
 impl<Call: fmt::Debug> fmt::Debug for UncheckedExtrinsic<Call> {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
 		let sig_hex: String = self.signature.iter().map(|b| format!("{b:02x}")).collect();
@@ -99,7 +106,6 @@ where
 
 pub type DispatchResult = Result<(), &'static str>;
 
-/// Key–value store abstraction.
 pub trait KeyValueStore {
 	fn get(&self, key: &[u8]) -> Option<Vec<u8>>;
 	fn put(&self, key: &[u8], value: &[u8]) -> Result<(), String>;
@@ -110,7 +116,8 @@ pub trait KeyValueStore {
 static ROCKS_DB: Lazy<DB> = Lazy::new(|| {
 	let mut opts = Options::default();
 	opts.create_if_missing(true);
-	DB::open(&opts, "state.db").expect("failed to open RocksDB at ./state.db")
+	DB::open(&opts, db_path())
+		.unwrap_or_else(|e| panic!("failed to open RocksDB at '{}': {e}", db_path()))
 });
 
 pub struct RocksDbStore;
@@ -133,23 +140,69 @@ impl KeyValueStore for RocksDbStore {
 		ROCKS_DB
 			.iterator(mode)
 			.filter_map(|res| res.ok())
-			.filter_map(|(k, v)| {
-				if k.starts_with(prefix) {
-					Some((k.to_vec(), v.to_vec()))
-				} else {
-					None
-				}
-			})
+			.filter_map(
+				|(k, v)| {
+					if k.starts_with(prefix) { Some((k.to_vec(), v.to_vec())) } else { None }
+				},
+			)
 			.collect()
 	}
 }
 
+#[cfg(not(test))]
 pub fn kv_store() -> RocksDbStore {
 	RocksDbStore
 }
 
-/// Pending extrinsics waiting to be included in a block.
-/// Clear boundary between "received" and "applied" transactions.
+/// In-memory store used by all unit tests.
+///
+/// Each test runs in its own thread (Rust test harness uses `thread::spawn` per test),
+/// so the thread-local gives every test a completely isolated, zero-initialised store —
+/// no RocksDB, no leftover chain state bleeding between tests.
+#[cfg(test)]
+pub fn kv_store() -> test_store::MemStore {
+	test_store::MemStore
+}
+
+#[cfg(test)]
+pub mod test_store {
+	use super::KeyValueStore;
+	use std::{cell::RefCell, collections::BTreeMap};
+
+	thread_local! {
+		static MEM: RefCell<BTreeMap<Vec<u8>, Vec<u8>>> = RefCell::new(BTreeMap::new());
+	}
+
+	pub struct MemStore;
+
+	impl KeyValueStore for MemStore {
+		fn get(&self, key: &[u8]) -> Option<Vec<u8>> {
+			MEM.with(|m| m.borrow().get(key).cloned())
+		}
+
+		fn put(&self, key: &[u8], value: &[u8]) -> Result<(), String> {
+			MEM.with(|m| m.borrow_mut().insert(key.to_vec(), value.to_vec()));
+			Ok(())
+		}
+
+		fn delete(&self, key: &[u8]) -> Result<(), String> {
+			MEM.with(|m| m.borrow_mut().remove(key));
+			Ok(())
+		}
+
+		fn scan_prefix(&self, prefix: &[u8]) -> Vec<(Vec<u8>, Vec<u8>)> {
+			MEM.with(|m| {
+				m.borrow()
+					.iter()
+					.filter(|(k, _)| k.starts_with(prefix))
+					.map(|(k, v)| (k.clone(), v.clone()))
+					.collect()
+			})
+		}
+	}
+}
+
+/// Separates "received" txs from "applied" ones; only drained at seal time.
 #[derive(Debug, Default)]
 pub struct Mempool<Extrinsic> {
 	pending: std::collections::VecDeque<Extrinsic>,
@@ -163,8 +216,7 @@ pub struct Mempool<Extrinsic> {
 pub struct MempoolFull;
 
 impl<Extrinsic> Mempool<Extrinsic> {
-	/// New mempool with no capacity limit and no block limit.
-	pub fn new() -> Self {
+		pub fn new() -> Self {
 		Self { pending: std::collections::VecDeque::new(), max_capacity: None, block_limit: None }
 	}
 
@@ -191,12 +243,11 @@ impl<Extrinsic> Mempool<Extrinsic> {
 		self.block_limit.is_some_and(|limit| self.pending.len() >= limit)
 	}
 
-	/// The configured per-block extrinsic limit, if any.
 	pub fn block_limit(&self) -> Option<usize> {
 		self.block_limit
 	}
 
-	/// Iterator over all pending extrinsics in order. Used by the persistence layer.
+	/// Used by the RPC nonce handler to count pending txs per account.
 	pub fn pending_extrinsics(&self) -> impl Iterator<Item = &Extrinsic> {
 		self.pending.iter()
 	}
@@ -226,11 +277,7 @@ impl<Extrinsic> Mempool<Extrinsic> {
 
 	/// Remove the extrinsic at index (0-based). Use when a tx is invalid.
 	pub fn remove(&mut self, index: usize) -> Option<Extrinsic> {
-		if index < self.pending.len() {
-			self.pending.remove(index)
-		} else {
-			None
-		}
+		if index < self.pending.len() { self.pending.remove(index) } else { None }
 	}
 
 	pub fn len(&self) -> usize {
@@ -239,6 +286,15 @@ impl<Extrinsic> Mempool<Extrinsic> {
 
 	pub fn is_empty(&self) -> bool {
 		self.pending.is_empty()
+	}
+
+	/// Keep only extrinsics for which `f` returns `true`. Used to evict txs that
+	/// were already included in a peer block so we don't produce a duplicate.
+	pub fn retain<F>(&mut self, f: F)
+	where
+		F: FnMut(&Extrinsic) -> bool,
+	{
+		self.pending.retain(f);
 	}
 }
 
@@ -259,16 +315,13 @@ pub trait Dispatch {
 	type Caller;
 	type Call;
 
-	/// This function takes a `caller` and the `call` they want to make, and returns a `Result`
-	/// based on the outcome of that function call.
 	fn dispatch(&mut self, caller: Self::Caller, call: Self::Call) -> DispatchResult;
 }
 
 /// Dev keyring — mirrors `sp_keyring::AccountKeyring` from the Substrate ecosystem.
 ///
 /// Each variant derives a deterministic Ed25519 key from the UTF-8 encoding of the
-/// variant name zero-padded to 32 bytes. Only for development / testing; never use
-/// hardcoded seeds in production.
+/// variant name zero-padded to 32 bytes. Only for development / testing.
 pub mod keyring {
 	use ed25519_dalek::SigningKey;
 
@@ -300,7 +353,6 @@ pub mod keyring {
 		}
 	}
 
-	/// Resolve a human-readable account name to an `AccountKeyring` variant.
 	pub fn from_name(name: &str) -> Option<AccountKeyring> {
 		match name.to_lowercase().as_str() {
 			"alice" => Some(AccountKeyring::Alice),
@@ -308,5 +360,177 @@ pub mod keyring {
 			"charlie" => Some(AccountKeyring::Charlie),
 			_ => None,
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use keyring::AccountKeyring::{Alice, Bob};
+	use parity_scale_codec::Encode;
+
+	// -----------------------------------------------------------------------
+	// Mempool
+	// -----------------------------------------------------------------------
+
+	#[test]
+	fn mempool_new_is_empty() {
+		let pool: Mempool<i32> = Mempool::new();
+		assert!(pool.is_empty());
+		assert_eq!(pool.len(), 0);
+	}
+
+	#[test]
+	fn mempool_submit_and_drain_all() {
+		let mut pool: Mempool<i32> = Mempool::new();
+		pool.submit(1).unwrap();
+		pool.submit(2).unwrap();
+		pool.submit(3).unwrap();
+		let batch = pool.drain_for_block(10);
+		assert_eq!(batch, vec![1, 2, 3]);
+		assert!(pool.is_empty());
+	}
+
+	#[test]
+	fn mempool_drain_partial_leaves_remainder() {
+		let mut pool: Mempool<i32> = Mempool::new();
+		for i in 0..5 {
+			pool.submit(i).unwrap();
+		}
+		let batch = pool.drain_for_block(3);
+		assert_eq!(batch, vec![0, 1, 2]);
+		assert_eq!(pool.len(), 2);
+	}
+
+	#[test]
+	fn mempool_drain_from_empty_returns_empty_vec() {
+		let mut pool: Mempool<i32> = Mempool::new();
+		assert_eq!(pool.drain_for_block(10), Vec::<i32>::new());
+	}
+
+	#[test]
+	fn mempool_capacity_rejects_overflow() {
+		let mut pool: Mempool<i32> = Mempool::with_capacity(2);
+		assert!(pool.submit(1).is_ok());
+		assert!(pool.submit(2).is_ok());
+		assert!(pool.submit(3).is_err());
+		assert_eq!(pool.len(), 2);
+	}
+
+	#[test]
+	fn mempool_block_limit_signals_correctly() {
+		let mut pool: Mempool<i32> = Mempool::with_block_limit(2);
+		assert!(!pool.is_block_ready());
+		pool.submit(1).unwrap();
+		assert!(!pool.is_block_ready());
+		pool.submit(2).unwrap();
+		assert!(pool.is_block_ready());
+		pool.drain_for_block(2);
+		assert!(!pool.is_block_ready());
+	}
+
+	#[test]
+	fn mempool_retain_evicts_matching() {
+		let mut pool: Mempool<i32> = Mempool::new();
+		for i in 0..5 {
+			pool.submit(i).unwrap();
+		}
+		pool.retain(|x| x % 2 == 0); // keep evens
+		let batch = pool.drain_for_block(10);
+		assert_eq!(batch, vec![0, 2, 4]);
+	}
+
+	#[test]
+	fn mempool_remove_by_index() {
+		let mut pool: Mempool<i32> = Mempool::new();
+		pool.submit(10).unwrap();
+		pool.submit(20).unwrap();
+		pool.submit(30).unwrap();
+		assert_eq!(pool.remove(1), Some(20));
+		assert_eq!(pool.len(), 2);
+		assert_eq!(pool.drain_for_block(10), vec![10, 30]);
+	}
+
+	#[test]
+	fn mempool_remove_out_of_bounds_returns_none() {
+		let mut pool: Mempool<i32> = Mempool::new();
+		pool.submit(1).unwrap();
+		assert_eq!(pool.remove(5), None);
+		assert_eq!(pool.len(), 1);
+	}
+
+	#[test]
+	fn mempool_pending_extrinsics_iter() {
+		let mut pool: Mempool<i32> = Mempool::new();
+		pool.submit(10).unwrap();
+		pool.submit(20).unwrap();
+		let items: Vec<_> = pool.pending_extrinsics().collect();
+		assert_eq!(items, vec![&10, &20]);
+	}
+
+	// -----------------------------------------------------------------------
+	// UncheckedExtrinsic — signing & verification
+	// -----------------------------------------------------------------------
+
+	#[derive(Encode)]
+	struct TestCall(u32);
+
+	#[test]
+	fn new_signed_produces_valid_extrinsic() {
+		let sk = Alice.signing_key();
+		let ext = UncheckedExtrinsic::new_signed(&sk, 0, TestCall(42));
+		assert_eq!(ext.signer, Alice.public());
+		assert_eq!(ext.nonce, 0);
+		assert!(ext.verify().is_ok());
+	}
+
+	#[test]
+	fn verify_rejects_tampered_nonce() {
+		let sk = Alice.signing_key();
+		let mut ext = UncheckedExtrinsic::new_signed(&sk, 0, TestCall(1));
+		ext.nonce = 99;
+		assert!(ext.verify().is_err());
+	}
+
+	#[test]
+	fn verify_rejects_wrong_signer_field() {
+		let sk = Alice.signing_key();
+		let mut ext = UncheckedExtrinsic::new_signed(&sk, 0, TestCall(1));
+		// Swap the signer field to Bob's public key — payload won't match.
+		ext.signer = Bob.public();
+		assert!(ext.verify().is_err());
+	}
+
+	#[test]
+	fn nonces_produce_different_signatures() {
+		let sk = Alice.signing_key();
+		let ext0 = UncheckedExtrinsic::new_signed(&sk, 0, TestCall(1));
+		let ext1 = UncheckedExtrinsic::new_signed(&sk, 1, TestCall(1));
+		assert_ne!(ext0.signature, ext1.signature);
+	}
+
+	// -----------------------------------------------------------------------
+	// verify_batch
+	// -----------------------------------------------------------------------
+
+	#[test]
+	fn verify_batch_all_valid() {
+		let sk = Alice.signing_key();
+		let exts: Vec<_> =
+			(0..4).map(|n| UncheckedExtrinsic::new_signed(&sk, n, TestCall(n))).collect();
+		let results = verify_batch(&exts);
+		assert!(results.iter().all(|r| r.is_ok()));
+	}
+
+	#[test]
+	fn verify_batch_catches_tampered_entry() {
+		let sk = Alice.signing_key();
+		let mut exts: Vec<_> =
+			(0..3).map(|n| UncheckedExtrinsic::new_signed(&sk, n, TestCall(n))).collect();
+		exts[1].nonce = 99; // tamper middle entry
+		let results = verify_batch(&exts);
+		assert!(results[0].is_ok());
+		assert!(results[1].is_err());
+		assert!(results[2].is_ok());
 	}
 }

@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
+use crate::support::{KeyValueStore, kv_store};
 use num::traits::{CheckedAdd, CheckedSub, One, Zero};
 use parity_scale_codec::{Decode, Encode};
-use crate::support::{kv_store, KeyValueStore};
 
 const PREFIX_BLOCK_NUMBER: &[u8] = b"system:block_number";
 const PREFIX_NONCE: &[u8] = b"system:nonce:";
@@ -34,10 +34,9 @@ impl<T: Config> Pallet<T> {
 				continue;
 			}
 			let who_bytes = &key[PREFIX_NONCE.len()..];
-			if let (Ok(account), Ok(nonce_value)) = (
-				T::AccountId::decode(&mut &who_bytes[..]),
-				T::Nonce::decode(&mut &value[..]),
-			) {
+			if let (Ok(account), Ok(nonce_value)) =
+				(T::AccountId::decode(&mut &who_bytes[..]), T::Nonce::decode(&mut &value[..]))
+			{
 				nonce.insert(account, nonce_value);
 			}
 		}
@@ -76,24 +75,70 @@ impl<T: Config> Pallet<T> {
 }
 
 #[cfg(test)]
-mod test {
-	use crate::system::Pallet;
+mod tests {
+	use super::*;
 
 	struct TestConfig;
-	impl super::Config for TestConfig {
+	impl Config for TestConfig {
 		type AccountId = String;
 		type BlockNumber = u32;
 		type Nonce = u32;
 	}
 
-	#[test]
-	fn init_system() {
-		let mut system = Pallet::<TestConfig>::new();
-		system.inc_block_number();
-		system.inc_nonce(&"alice".to_string());
+	fn new() -> Pallet<TestConfig> {
+		Pallet::<TestConfig>::new()
+	}
 
-		assert_eq!(system.block_number(), 1);
-		assert_eq!(system.nonce.get("alice"), Some(&1));
-		assert_eq!(system.nonce.get("bob"), None);
+	#[test]
+	fn block_number_starts_at_zero() {
+		assert_eq!(new().block_number(), 0);
+	}
+
+	#[test]
+	fn inc_block_number_increments_by_one() {
+		let mut s = new();
+		s.inc_block_number();
+		assert_eq!(s.block_number(), 1);
+		s.inc_block_number();
+		assert_eq!(s.block_number(), 2);
+	}
+
+	#[test]
+	fn nonce_starts_at_zero_for_unknown_account() {
+		assert_eq!(new().nonce(&"alice".to_string()), 0);
+	}
+
+	#[test]
+	fn inc_nonce_increments_target_account() {
+		let mut s = new();
+		s.inc_nonce(&"alice".to_string());
+		assert_eq!(s.nonce(&"alice".to_string()), 1);
+	}
+
+	#[test]
+	fn inc_nonce_does_not_affect_other_accounts() {
+		let mut s = new();
+		s.inc_nonce(&"alice".to_string());
+		assert_eq!(s.nonce(&"bob".to_string()), 0);
+	}
+
+	#[test]
+	fn inc_nonce_multiple_times() {
+		let mut s = new();
+		s.inc_nonce(&"alice".to_string());
+		s.inc_nonce(&"alice".to_string());
+		s.inc_nonce(&"alice".to_string());
+		assert_eq!(s.nonce(&"alice".to_string()), 3);
+	}
+
+	#[test]
+	fn multiple_accounts_track_nonces_independently() {
+		let mut s = new();
+		s.inc_nonce(&"alice".to_string());
+		s.inc_nonce(&"alice".to_string());
+		s.inc_nonce(&"bob".to_string());
+		assert_eq!(s.nonce(&"alice".to_string()), 2);
+		assert_eq!(s.nonce(&"bob".to_string()), 1);
+		assert_eq!(s.nonce(&"charlie".to_string()), 0);
 	}
 }

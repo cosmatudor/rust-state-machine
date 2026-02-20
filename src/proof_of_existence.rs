@@ -1,4 +1,4 @@
-use crate::support::{DispatchResult, kv_store, KeyValueStore};
+use crate::support::{DispatchResult, KeyValueStore, kv_store};
 use core::fmt::Debug;
 use parity_scale_codec::{Decode, Encode};
 use std::collections::BTreeMap;
@@ -24,10 +24,9 @@ impl<T: Config> Pallet<T> {
 				continue;
 			}
 			let content_bytes = &key[PREFIX_POE.len()..];
-			if let (Ok(content), Ok(owner)) = (
-				T::Content::decode(&mut &content_bytes[..]),
-				T::AccountId::decode(&mut &value[..]),
-			) {
+			if let (Ok(content), Ok(owner)) =
+				(T::Content::decode(&mut &content_bytes[..]), T::AccountId::decode(&mut &value[..]))
+			{
 				claims.insert(content, owner);
 			}
 		}
@@ -49,7 +48,7 @@ impl<T: Config> Pallet<T> {
 
 #[macros::call]
 impl<T: Config> Pallet<T> {
-    pub fn create_claim(&mut self, caller: T::AccountId, claim: T::Content) -> DispatchResult {
+	pub fn create_claim(&mut self, caller: T::AccountId, claim: T::Content) -> DispatchResult {
 		if self.claims.contains_key(&claim) {
 			return Err(&"this content is already claimed");
 		}
@@ -81,30 +80,101 @@ impl<T: Config> Pallet<T> {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
+	use super::*;
+
 	struct TestConfig;
-
-	impl super::Config for TestConfig {
-		type Content = String;
-	}
-
 	impl crate::system::Config for TestConfig {
 		type AccountId = String;
 		type BlockNumber = u32;
 		type Nonce = u32;
 	}
+	impl Config for TestConfig {
+		type Content = String;
+	}
+
+	fn new() -> Pallet<TestConfig> {
+		Pallet::<TestConfig>::new()
+	}
 
 	#[test]
-	fn basic_proof_of_existence() {
-		let mut poe = super::Pallet::<TestConfig>::new();
-		assert_eq!(poe.get_claim(&"Hello, world!".to_string()), None);
-		assert_eq!(poe.create_claim("alice".to_string(), "Hello, world!".to_string()), Ok(()));
-		assert_eq!(poe.get_claim(&"Hello, world!".to_string()), Some(&"alice".to_string()));
+	fn get_claim_returns_none_for_missing_content() {
+		assert_eq!(new().get_claim(&"ghost".to_string()), None);
+	}
+
+	#[test]
+	fn create_claim_stores_owner() {
+		let mut poe = new();
+		assert_eq!(poe.create_claim("alice".to_string(), "doc".to_string()), Ok(()));
+		assert_eq!(poe.get_claim(&"doc".to_string()), Some(&"alice".to_string()));
+	}
+
+	#[test]
+	fn create_duplicate_claim_fails() {
+		let mut poe = new();
+		poe.create_claim("alice".to_string(), "doc".to_string()).unwrap();
 		assert_eq!(
-			poe.create_claim("bob".to_string(), "Hello, world!".to_string()),
+			poe.create_claim("bob".to_string(), "doc".to_string()),
 			Err("this content is already claimed")
 		);
-		assert_eq!(poe.revoke_claim("alice".to_string(), "Hello, world!".to_string()), Ok(()));
-		assert_eq!(poe.create_claim("bob".to_string(), "Hello, world!".to_string()), Ok(()));
+		// original owner unchanged
+		assert_eq!(poe.get_claim(&"doc".to_string()), Some(&"alice".to_string()));
+	}
+
+	#[test]
+	fn revoke_claim_removes_it() {
+		let mut poe = new();
+		poe.create_claim("alice".to_string(), "doc".to_string()).unwrap();
+		assert_eq!(poe.revoke_claim("alice".to_string(), "doc".to_string()), Ok(()));
+		assert_eq!(poe.get_claim(&"doc".to_string()), None);
+	}
+
+	#[test]
+	fn revoke_nonexistent_claim_fails() {
+		let mut poe = new();
+		assert_eq!(
+			poe.revoke_claim("alice".to_string(), "ghost".to_string()),
+			Err("claim does not exist")
+		);
+	}
+
+	#[test]
+	fn revoke_claim_wrong_owner_fails() {
+		let mut poe = new();
+		poe.create_claim("alice".to_string(), "doc".to_string()).unwrap();
+		assert_eq!(
+			poe.revoke_claim("bob".to_string(), "doc".to_string()),
+			Err("caller is not owner")
+		);
+		// claim still belongs to alice
+		assert_eq!(poe.get_claim(&"doc".to_string()), Some(&"alice".to_string()));
+	}
+
+	#[test]
+	fn reclaim_after_revoke_succeeds() {
+		let mut poe = new();
+		poe.create_claim("alice".to_string(), "doc".to_string()).unwrap();
+		poe.revoke_claim("alice".to_string(), "doc".to_string()).unwrap();
+		assert_eq!(poe.create_claim("bob".to_string(), "doc".to_string()), Ok(()));
+		assert_eq!(poe.get_claim(&"doc".to_string()), Some(&"bob".to_string()));
+	}
+
+	#[test]
+	fn multiple_claims_are_independent() {
+		let mut poe = new();
+		poe.create_claim("alice".to_string(), "doc1".to_string()).unwrap();
+		poe.create_claim("bob".to_string(), "doc2".to_string()).unwrap();
+		assert_eq!(poe.get_claim(&"doc1".to_string()), Some(&"alice".to_string()));
+		assert_eq!(poe.get_claim(&"doc2".to_string()), Some(&"bob".to_string()));
+	}
+
+	#[test]
+	fn revoking_one_claim_does_not_affect_others() {
+		let mut poe = new();
+		poe.create_claim("alice".to_string(), "doc1".to_string()).unwrap();
+		poe.create_claim("alice".to_string(), "doc2".to_string()).unwrap();
+		poe.revoke_claim("alice".to_string(), "doc1".to_string()).unwrap();
+		assert_eq!(poe.get_claim(&"doc1".to_string()), None);
+		assert_eq!(poe.get_claim(&"doc2".to_string()), Some(&"alice".to_string()));
 	}
 }
