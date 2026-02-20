@@ -2,7 +2,7 @@
 
 A Substrate-inspired blockchain node built from scratch in Rust — starting from the
 [Dot Code School state machine course](https://dotcodeschool.com/courses/in-browser-rust-state-machine)
-and extended into a fully functional, multi-node P2P blockchain.
+and extended into a fully functional, multi-node P2P blockchain POC.
 
 ---
 
